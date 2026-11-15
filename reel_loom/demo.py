@@ -14,7 +14,8 @@ from .client import Client
 from .errors import LoomError, require
 
 WORKFLOWS = ("ingest", "revisions", "looks", "render", "signal", "waveform", "loudness",
-             "sheet", "captions", "imprint", "cancel-retry", "recovery", "resources", "matrix", "conformance", "lineage")
+             "sheet", "captions", "imprint", "cancel-retry", "recovery", "resources", "matrix",
+             "conformance", "lineage", "ripple")
 
 
 def expect_error(action, code):
@@ -177,7 +178,103 @@ class Walkthrough:
             require(any(n["id"] == imprint["id"] for n in result["nodes"]), "walkthrough_lineage", "Imprint missing from lineage")
             failure = expect_error(lambda: c.request("GET", "/tickets/missing/lineage"), "not_found")
             return {"lineage":result,"failure":failure}
+        if name == "ripple":
+            return self.ripple()
         raise ValueError("Unknown walkthrough: " + name)
+
+    def ripple(self):
+        """Edit one slice in place, then verify captions, renders, and imprints."""
+        c, reel_id = self.client, self.reel["id"]
+        base = c.request("GET", "/reels/" + reel_id)
+        first, second = base["document"]["slices"]
+        require(first["asset"] == second["asset"], "walkthrough_ripple", "Repeated source slices are required")
+        old_ticket = c.render(reel_id, "preview", revision=1)
+        track = c.request("POST", f'/assets/{self.asset["id"]}/cues',
+                          {"language":"zh-CN","srt":"1\n00:00:00,700 --> 00:00:02,700\n潮声\n"})
+        before = c.request("POST", f"/reels/{reel_id}/captions", {"revision":1,"tracks":[track["id"]]})
+
+        # Trim only the first slice; the second one starts earlier, keeping its identity.
+        trimmed = c.edit_slice(reel_id, first["id"], 1, out=1.5)
+        require([item["id"] for item in trimmed["document"]["slices"]] == [first["id"], second["id"]],
+                "walkthrough_ripple", "Slice-local editing replaced slice identities")
+        require(trimmed["document"]["slices"][0]["out_tick"] == 1_500_000 and
+                trimmed["document"]["slices"][1]["at_tick"] == 1_300_000,
+                "walkthrough_ripple", "Following slice did not ripple to the changed length")
+        after = c.request("POST", f"/reels/{reel_id}/captions", {"revision":trimmed["revision"],"tracks":[track["id"]]})
+        require([x["start_tick"] for x in after["cues"]] == [500_000, 1_300_000] and
+                [x["slice_id"] for x in after["cues"]] == [first["id"], second["id"]],
+                "walkthrough_ripple", "Caption projection did not follow the edited reel")
+        require(before["cues"] != after["cues"], "walkthrough_ripple", "Projected captions did not change")
+
+        # The same source appears twice; relabel and move only the second occurrence.
+        moved = c.edit_slice(reel_id, second["id"], trimmed["revision"], position=0, label="重排")
+        require([item["id"] for item in moved["document"]["slices"]] == [second["id"], first["id"]] and
+                moved["document"]["slices"][0]["label"] == "重排" and
+                moved["document"]["slices"][1]["label"] == first["label"],
+                "walkthrough_ripple", "Slice move leaked onto another slice of the same source")
+        require([item["at_tick"] for item in moved["document"]["slices"]] == [0, 1_200_000],
+                "walkthrough_ripple", "Reel positions did not follow the moved slice")
+
+        # Historical revision, queued ticket, and prior captions stay frozen.
+        historical = c.request("GET", f"/reels/{reel_id}?revision=1")
+        require(historical["hash"] == base["hash"], "walkthrough_ripple", "Historical revision changed")
+        queued = c.request("GET", "/tickets/" + old_ticket["id"])
+        require(queued["snapshot"]["reel_hash"] == base["hash"] and
+                queued["snapshot"]["document"]["duration_tick"] == base["document"]["duration_tick"],
+                "walkthrough_ripple", "Queued render snapshot drifted with the edit")
+
+        # A second editor working from revision 1: mergeable edits survive, conflicting ones report.
+        head = moved["revision"]
+        conflict = expect_error(
+            lambda: c.edit_slice(reel_id, first["id"], 1, out=1.0), "revision_conflict")
+        require(conflict["context"]["reconfirm"][0]["reasons"] == ["source_out"] and
+                conflict["context"]["kept"] == [], "walkthrough_ripple", "A conflicting edit was not reported")
+        unchanged = c.request("GET", "/reels/" + reel_id)
+        require(unchanged["hash"] == moved["hash"], "walkthrough_ripple", "Rejected edit wrote a revision")
+
+        merged = c.edit_reel(reel_id, 1, [{"slice": first["id"], "label": "第二次"}])
+        require(merged.get("merged") is True and merged["revision"] == head+1 and
+                merged["document"]["slices"][1]["label"] == "第二次" and
+                merged["document"]["slices"][0]["label"] == "重排",
+                "walkthrough_ripple", "A keepable edit did not merge onto the newer head")
+
+        # Invalid edits are all-or-nothing.
+        head_hash = c.request("GET", "/reels/" + reel_id)["hash"]
+        expect_error(lambda: c.edit_reel(reel_id, merged["revision"], [
+            {"slice": first["id"], "out": 2.0}, {"slice": second["id"], "out": 99}]), "slice_bounds")
+        require(c.request("GET", "/reels/" + reel_id)["hash"] == head_hash,
+                "walkthrough_ripple", "A failed edit left a partially moved reel")
+        failure = expect_error(lambda: c.edit_slice(reel_id, "slice_missing", merged["revision"], out=1.0),
+                               "slice_not_found")
+        # Caption track still projects onto the edited head and the old ticket still completes.
+        projected = c.request("POST", f"/reels/{reel_id}/captions",
+                              {"revision":merged["revision"],"tracks":[track["id"]]})
+        require(projected["cues"] and all(x["slice_id"] in {first["id"], second["id"]} for x in projected["cues"]),
+                "walkthrough_ripple", "Existing caption track lost its slice binding")
+        while self.app.renderer.run_once() is not None:
+            pass
+        finished = c.request("GET", "/tickets/" + old_ticket["id"])
+        require(finished["state"] == "succeeded", "walkthrough_ripple", "Queued revision could not render")
+        imprint = c.imprint(finished["id"], [track["id"]])
+        manifest = imprint["manifest"]
+        require(manifest["ticket"] == finished["id"] and
+                manifest["fingerprint"] == finished["fingerprint"] and
+                manifest["caption"]["revision"] == 1 and
+                manifest["caption"]["reel_hash"] == base["hash"],
+                "walkthrough_ripple", "Imprint did not keep the pre-edit revision and captions")
+        verified = c.request("GET", f'/imprints/{imprint["id"]}/verify')
+        require(verified["valid"], "walkthrough_ripple", "Frozen imprint failed verification")
+        rendition = c.request("GET", f'/artifacts/{finished["artifacts"][0]["id"]}/conformance')
+        require(rendition["valid"], "walkthrough_ripple", "Real rendition did not conform", report=rendition)
+        return {"revision": merged["revision"],
+                "slices": [{"id": item["id"], "in": item["in_tick"], "out": item["out_tick"],
+                            "at": item["at_tick"], "label": item["label"]}
+                           for item in merged["document"]["slices"]],
+                "captions_before": before["cues"], "captions_after": projected["cues"],
+                "merge": {"kept": merged.get("kept"), "reconfirm": conflict},
+                "historical_hash": historical["hash"], "ticket": finished["id"],
+                "imprint": imprint["id"], "verified": verified["valid"],
+                "conformance": rendition["valid"], "failure": failure}
 
 
 def main():

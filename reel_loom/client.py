@@ -19,7 +19,7 @@ class Client:
             content = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
             headers.setdefault("Content-Type", "application/json")
         else:
-            content = b"" if method in ("POST", "PUT") else None
+            content = b"" if method in ("POST", "PUT", "PATCH") else None
         request = Request(self.base_url+path, data=content, headers=headers, method=method)
         try:
             with urlopen(request, timeout=self.timeout) as response:
@@ -43,6 +43,12 @@ class Client:
 
     def replace_reel(self, reel_id, revision, title, slices):
         return self.request("PUT", "/reels/"+reel_id, {"title": title, "slices": slices}, {"If-Match": str(revision)})
+
+    def edit_reel(self, reel_id, revision, edits):
+        return self.request("PATCH", "/reels/"+reel_id, {"edits": edits}, {"If-Match": str(revision)})
+
+    def edit_slice(self, reel_id, slice_id, revision, **changes):
+        return self.request("PATCH", f"/reels/{reel_id}/slices/{slice_id}", changes, {"If-Match": str(revision)})
 
     def put_look(self, look_id, spec, expected=0):
         return self.request("PUT", "/looks/"+look_id, spec, {"If-Match": str(expected)})

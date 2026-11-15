@@ -34,7 +34,7 @@ class Api:
                     "resources": ["assets", "reels", "looks", "tickets", "analyses", "artifacts", "imprints"],
                     "time_units": "seconds at input; integer microseconds in frozen records",
                     "render_modes": ["video/h264+aac", "audio/pcm_s16le"],
-                    "editing": "ordered hard cuts; immutable revisions",
+                    "editing": "ordered hard cuts; immutable revisions; PATCH edits existing slices",
                     "captions": "source SRT tracks projected to a reel revision"}
         if route == "/assets":
             if method == "POST":
@@ -74,6 +74,9 @@ class Api:
             if method == "PUT" and not action:
                 expected = self.expected(headers)
                 return app.reels.replace(reel_id, expected, self.json_body(raw))
+            if method == "PATCH" and not action:
+                expected = self.expected(headers)
+                return app.reels.patch(reel_id, expected, self.json_body(raw))
             if method == "GET" and action == "history":
                 return {"items": app.reels.history(reel_id)}
             if method == "POST" and action == "seal":
@@ -82,6 +85,9 @@ class Api:
                 body = self.json_body(raw)
                 object_body(body, ("revision", "tracks"), ("tracks",))
                 return app.captions.project(reel_id, body.get("revision"), body["tracks"])
+        match = re.fullmatch(r"/reels/([^/]+)/slices/([^/]+)", route)
+        if match and method == "PATCH":
+            return app.reels.patch_slice(match[1], match[2], self.expected(headers), self.json_body(raw))
         if method == "GET" and route == "/looks":
             return {"items": app.looks.list()}
         look_history = re.fullmatch(r"/looks/([^/]+)/history", route)

@@ -30,6 +30,7 @@ python3 -m venv .venv
 | 接收媒体 | `POST /assets`，原始字节；`X-Media-Label` 为 ASCII 标签 |
 | 建剪辑卷 | `POST /reels`，`{"title":"潮声短片","slices":[{"asset":"asset_…","in":0.2,"out":2.5}]}` |
 | 改稿 | `PUT /reels/{id}`，相同文档结构，`If-Match: 1`；旧版本 `GET ?revision=1` |
+| 局部改稿 | `PATCH /reels/{id}`，`{"edits":[{"slice":"slice_…","out":1.5,"position":0,"label":"…"}]}`，`If-Match` 指定编辑起点修订；单段可用 `PATCH /reels/{id}/slices/{slice_id}` |
 | 封卷 | `POST /reels/{id}/seal`，`If-Match` 指定头修订 |
 | 版式 | `PUT /looks/{id}`，`{"kind":"video","width":640,"height":360,"fit":"contain"}`；更新需 `If-Match` |
 | 编码 | `POST /tickets`，`{"reel":"reel_…","look":"preview"}`；可指定 `revision`、`look_version` |
@@ -38,7 +39,7 @@ python3 -m venv .venv
 | 音频测量 | `POST /assets/{id}/signal`、`waveform`、`loudness`，默认请求 `{}` |
 | 画面索引 | `POST /assets/{id}/contact-sheet`，`{"count":9,"columns":3}` |
 | 导入字幕 | `POST /assets/{id}/cues`，`{"language":"zh-CN","srt":"…"}` |
-| 映射字幕 | `POST /reels/{id}/captions`，`{"revision":1,"tracks":["cue_…"]}` |
+| 映射字幕 | `POST /reels/{id}/captions`，`{"revision":1,"tracks":["cue_…"]}`；返回的每个区间带 `slice_id` 与 `occurrence` |
 | 成片验规 | `GET /artifacts/{id}/conformance`，真实全解码 |
 | 血缘 | `GET /tickets/{id}/lineage` |
 | 交付印本 | `POST /tickets/{id}/imprints`，`{"cue_tracks":[]}`；`GET /imprints/{id}/verify` |
@@ -47,7 +48,11 @@ python3 -m venv .venv
 
 `Idempotency-Key` 可用于创建剪辑卷、渲染单、渲染矩阵；重放返回最初创建响应，当前状态需 GET 回读。不同内容复用同一键返回 409。所有新引用要求 ready 来源；已冻结任务可以继续读退役来源。未完成渲染不能打包。取消运行单是请求，最终状态以 GET 为准；提交成片与成功状态在同一 SQLite 事务中。
 
-视频版式输出 H.264/AAC MP4，音频版式输出 PCM WAV；版式支持 1/2 声道、采样率、常量增益、contain/cover 和恒定帧率。剪辑卷当前采用顺序硬切，不具备多轨、转场、变速、字幕烧录或分段流能力。字幕保留源时间并在投影时按剪辑区间裁切；字幕轨创建后不可变。signal 输出 dBFS，loudness 才是 EBU R128，二者不可互换。
+局部改稿只落一条新修订：命中的镜段保留自己的标识，仅改动 `in`/`out`/`position`/`label`，其余镜段不受影响；每段输出位置由新片长重新累计，因此后续镜段随长度移动。同一来源被多次使用时各镜段仍是独立身份，改动不会传播到同源的其他镜段。既有字幕轨仍按 `slice_id` 与源时间投影到新修订，重复源片段各有自己的输出区间。整份 `PUT` 仍会为全部镜段生成新标识。
+
+`If-Match` 可以指向更早的修订：服务端把请求与该修订到当前头之间的他人编辑逐段比对，返回 `kept`（可保留、可用当前 `If-Match` 直接重提）与 `reconfirm`（目标镜段已被删除、被编辑的源端点/标签已改或位置已变，须重新确认；`reasons` 取值 `removed`、`source_asset`、`source_in`、`source_out`、`label`、`order`）。任一需要重新确认的编辑都不会写入，避免静默覆盖另一人的成果；确认后重提 `kept` 即可合并成新修订，响应带 `merged`/`merged_from`。旧修订、已排队渲染快照与既有印本仍按原时间与字幕冻结，不受改稿影响。
+
+视频版式输出 H.264/AAC MP4，音频版式输出 PCM WAV；版式支持 1/2 声道、采样率、常量增益、contain/cover 和恒定帧率。剪辑卷当前采用顺序硬切，不具备多轨、转场、变速、字幕烧录或分段流能力，也不支持插入或删除镜段（镜段数量不变，仅原位修剪、移位与改标签）。字幕保留源时间并在投影时按剪辑区间裁切；字幕轨创建后不可变。signal 输出 dBFS，loudness 才是 EBU R128，二者不可互换。
 
 ## 构建与生产流程校验
 
@@ -56,6 +61,6 @@ python3 -m venv .venv
 .venv/bin/python -m reel_loom.demo --workflow conformance
 ```
 
-全部 16 个有界流程记录在 `.project-runtime.json`，每条都经过真实领域与持久化路径，并观察成功或拒绝结果。测试延后：基线不包含单元/集成测试文件、不声明 test_command；这些生产示例不是完整测试保障。后续质量保障任务可从这些入口补建测试。
+全部 17 个有界流程记录在 `.project-runtime.json`，每条都经过真实领域与持久化路径，并观察成功或拒绝结果。`ripple` 用同一份媒体做镜段原位修剪、移位与改标签，再回读历史修订、字幕投影、旧渲染单成片与印本校验。测试延后：基线不包含单元/集成测试文件、不声明 test_command；这些生产示例不是完整测试保障。后续质量保障任务可从这些入口补建测试。
 
 源映射见 `.task-source.json`，业务边界见 `PROJECT_SPEC.md`。题库和内部难度证据在仓库外独立维护，不属于基线运行依赖。

@@ -70,6 +70,10 @@
     {
       "workflow_id": "lineage",
       "command": ".venv/bin/python -m reel_loom.demo --workflow lineage"
+    },
+    {
+      "workflow_id": "ripple",
+      "command": ".venv/bin/python -m reel_loom.demo --workflow ripple"
     }
   ]
 }

@@ -41,14 +41,25 @@ def intersect(a, b, c, d):
     return (start, end) if start < end else None
 
 
-def project_interval(start, end, slices):
+def project_interval(start, end, slices, asset=None):
+    """Map a source-time interval onto every matching slice of a reel.
+
+    ``slice`` is the position in the reel document, not the position in a
+    filtered source list.  ``slice_id`` and ``occurrence`` keep repeated uses
+    of the same source distinguishable from one another.
+    """
     result = []
+    occurrence = 0
     for index, item in enumerate(slices):
+        if asset is not None and item["asset"] != asset:
+            continue
+        occurrence += 1
         overlap = intersect(start, end, item["in_tick"], item["out_tick"])
         if overlap:
             a, b = overlap
             offset = item["at_tick"] - item["in_tick"]
-            result.append({"slice": index, "start_tick": a+offset, "end_tick": b+offset})
+            result.append({"slice": index, "slice_id": item["id"], "occurrence": occurrence,
+                           "asset": item["asset"], "start_tick": a+offset, "end_tick": b+offset})
     return result
 
 

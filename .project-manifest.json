@@ -441,6 +441,28 @@
         "tickets",
         "database"
       ]
+    },
+    {
+      "id": "ripple",
+      "name": "剪辑卷镜段局部调整",
+      "entry": "PATCH /reels/{id}, PATCH /reels/{id}/slices/{slice_id}",
+      "success": "镜段原位修剪/移动后后续位置连动，既有字幕轨继续投影，可合并他人编辑",
+      "failure": "冲突编辑明确列出须重新确认，失败不留半卷",
+      "verification": ".venv/bin/python -m reel_loom.demo --workflow ripple",
+      "steps": [
+        "输入经公开入口到领域规则",
+        "跨媒体或持久化边界提交结果",
+        "回读结果并观察拒绝路径"
+      ],
+      "module_ids": [
+        "api",
+        "reels",
+        "timebase",
+        "captions",
+        "tickets",
+        "imprints",
+        "database"
+      ]
     }
   ],
   "complexity": {

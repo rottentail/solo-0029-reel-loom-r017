@@ -37,13 +37,16 @@ class MediaHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self.handle_request()
 
+    def do_PATCH(self):
+        self.handle_request()
+
     def handle_request(self):
         try:
             url = urlsplit(self.path)
             params = parse_qs(url.query, keep_blank_values=True)
             require(all(len(v) == 1 for v in params.values()), "duplicate_query", "Query properties must not repeat")
             query = {k: v[0] for k, v in params.items()}
-            raw = self.read_body() if self.command in ("POST", "PUT") else b""
+            raw = self.read_body() if self.command in ("POST", "PUT", "PATCH") else b""
             result = self.server.api.handle(self.command, unquote(url.path), query, self.headers, raw)
             if isinstance(result, Download):
                 self.send_download(result)

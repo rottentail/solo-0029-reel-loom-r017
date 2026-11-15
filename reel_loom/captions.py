@@ -68,12 +68,13 @@ class Captions:
             projected = []
             for track_id in track_ids:
                 track = self.get(track_id, db)
-                slices = [item for item in reel["document"]["slices"] if item["asset"] == track["asset"]]
-                require(slices, "unrelated_track", "Cue track does not belong to this reel")
+                slices = reel["document"]["slices"]
+                require(any(item["asset"] == track["asset"] for item in slices),
+                        "unrelated_track", "Cue track does not belong to this reel")
                 for cue in track["cues"]:
-                    for interval in project_interval(cue["start_tick"], cue["end_tick"], slices):
+                    for interval in project_interval(cue["start_tick"], cue["end_tick"], slices, track["asset"]):
                         projected.append({**interval, "text": cue["text"], "track": track_id, "language": track["language"]})
-            projected.sort(key=lambda x: (x["start_tick"], x["end_tick"], x["track"], x["text"]))
+            projected.sort(key=lambda x: (x["start_tick"], x["end_tick"], x["slice"], x["track"], x["text"]))
             return {"reel": reel_id, "revision": reel["revision"], "reel_hash": reel["hash"], "cues": projected,
                     "srt": "\n\n".join(f'{i+1}\n{stamp(c["start_tick"])} --> {stamp(c["end_tick"])}\n{c["text"]}'
                                         for i, c in enumerate(projected)) + "\n"}
